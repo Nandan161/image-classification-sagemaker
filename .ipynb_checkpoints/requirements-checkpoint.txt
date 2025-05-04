@@ -1,0 +1,8 @@
+sagemaker
+boto3
+torch
+torchvision
+scikit-learn
+numpy
+matplotlib
+smdebug==1.0.12
