@@ -56,9 +56,6 @@ def train(model, train_loader, val_loader, criterion, optimizer, device, batch_s
     patience = 3
     max_epochs = 2
 
-    train_losses = []
-    val_losses = []
-
     for epoch in range(max_epochs):
         logger.info(f"Epoch {epoch+1}/{max_epochs}")
         for phase in ['train', 'valid']:
@@ -96,12 +93,6 @@ def train(model, train_loader, val_loader, criterion, optimizer, device, batch_s
             epoch_acc = correct / total
             logger.info(f"{phase.capitalize()} Loss: {epoch_loss:.4f}, Accuracy: {epoch_acc:.4f}")
 
-            # Collect losses for plotting
-            if is_train:
-                train_losses.append(epoch_loss)
-            else:
-                val_losses.append(epoch_loss)
-
             if not is_train:
                 if epoch_loss < best_loss:
                     best_loss = epoch_loss
@@ -113,7 +104,7 @@ def train(model, train_loader, val_loader, criterion, optimizer, device, batch_s
             logger.info(f"Early stopping triggered after {patience} epochs with no improvement.")
             break
 
-    return model, train_losses, val_losses
+    return model  
 
 
 def build_model(num_classes=133):
@@ -121,7 +112,6 @@ def build_model(num_classes=133):
 
     for param in base_model.parameters():
         param.requires_grad = False
-
     base_model.fc = nn.Sequential(
         nn.Linear(base_model.fc.in_features, 256),
         nn.ReLU(),
@@ -131,7 +121,9 @@ def build_model(num_classes=133):
     return base_model
 
 
-def create_dataloaders(data_dir, batch_size):
+from torch.utils.data import random_split
+
+def create_dataloaders(data_dir, batch_size, val_split=0.2, test_split=0.1):
     transform_train = transforms.Compose([
         transforms.RandomResizedCrop(224),
         transforms.RandomHorizontalFlip(),
@@ -143,13 +135,24 @@ def create_dataloaders(data_dir, batch_size):
         transforms.ToTensor()
     ])
 
-    train_data = torchvision.datasets.ImageFolder(root=os.path.join(data_dir), transform=transform_train)
-    val_data = torchvision.datasets.ImageFolder(root=os.path.join(data_dir), transform=transform_val_test)
-    test_data = torchvision.datasets.ImageFolder(root=os.path.join(data_dir), transform=transform_val_test)
+    full_dataset = torchvision.datasets.ImageFolder(root=data_dir, transform=transform_train)
 
-    train_loader = torch.utils.data.DataLoader(train_data, batch_size=batch_size, shuffle=True)
-    val_loader = torch.utils.data.DataLoader(val_data, batch_size=batch_size, shuffle=False)
-    test_loader = torch.utils.data.DataLoader(test_data, batch_size=batch_size, shuffle=False)
+    total_size = len(full_dataset)
+    test_size = int(test_split * total_size)
+    val_size = int(val_split * total_size)
+    train_size = total_size - val_size - test_size
+
+    # Split dataset
+    train_dataset, val_dataset, test_dataset = random_split(full_dataset, [train_size, val_size, test_size])
+
+    # Apply different transforms to val/test
+    val_dataset.dataset.transform = transform_val_test
+    test_dataset.dataset.transform = transform_val_test
+
+    # Dataloaders
+    train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+    val_loader = torch.utils.data.DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
+    test_loader = torch.utils.data.DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
 
     return train_loader, val_loader, test_loader
 
@@ -168,8 +171,15 @@ def main(args):
     trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     logger.info(f"Number of trainable parameters: {trainable_params}")
 
-    hook = smd.Hook.create_from_json_file()
-    hook.register_hook(model)
+    # Set up SageMaker Debugger hook only if config exists
+    hook = None
+    debug_config_path = "/opt/ml/input/config/debughookconfig.json"
+    if os.path.exists(debug_config_path):
+        hook = smd.Hook.create_from_json_file()
+        hook.register_hook(model)
+        logger.info("Debugger hook registered.")
+    else:
+        logger.info("Debugger config not found. Running without Debugger.")
 
     train_loader, val_loader, test_loader = create_dataloaders(args.data_dir, args.batch_size)
 
@@ -192,6 +202,7 @@ def main(args):
 
     if hook:
         hook.close()
+
 
 
 if __name__ == "__main__":
